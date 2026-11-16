@@ -1,146 +1,32 @@
-function KartVelocitySimulation_v51
-% KARTVELOCITYSIMULATION_V51 Extended hill with 50% slower angle variation.
-% Save as KartVelocitySimulation_v51.m and run KartVelocitySimulation_v51.
-% Requires MATLAB with uifigure/uigridlayout support; no extra toolboxes.
-%
-% Changelog
-% v51: Use linear b*v resistance in both regions and both solvers.
-% v51: Based on the uploaded v36 file. End at section x=25 m.
-%      thetaNew(x)=thetaStart+0.5*(thetaOriginal(x)-thetaStart).
-%      d(thetaNew)/dx is exactly half d(thetaOriginal)/dx.
-%      Integrate the new slope for consistent height in both solvers.
-% v36: Based on the supplied v34(1) file. Use quadratic resistance b*v^2
-%      in both friction regions and both solvers. b has units N*s^2/m^2.
-%      Dissipated power is b*v^3; update wheel coefficients and UI units.
-%      Preserve supplied parameters, hill, offsets, and acceleration equation.
-% v34: Shift simulated comparison curves and the dynamic band left 0.4 m.
-%      Trim comparison samples before x=0, including selected CSV exports.
-%      Preserve physical trajectories, hill profile, and GPS coordinates.
-% v33: Replace the speed fit and both raw recordings with the averaged CSV
-%      GPS Speed samples (0..30 m), embedded for standalone use. Keep the
-%      assumed +/-15% GPS band, visibility controls, and selected exports.
-%      Compare models with GPS at matched comparison coordinates.
-% v32: Shift Raw 1 left by 5 m and Raw 2 left by 2.52 m, then discard
-%      samples at negative shifted coordinates. Draw raw curves without markers.
-% v31: Restore the original vertical position of the real-speed polynomial.
-%      Restore selectable raw GPS curves and +/-15% bands with selected export.
-% v30: Add b1 before the hill-coordinate switch at x=5 m and b2 after it.
-%      Shift only speed-comparison curves and bands right by 0.8 m.
-%      Hill coordinates and simulation integration coordinates are unchanged.
-% v29: Restore separate mu1 and mu2 inputs before/after x=5 m.
-%      Display both simulated speeds with a -0.15 m/s vertical offset.
-%      Shift the dynamic band with its curve; retain physical solver speeds.
-% v28: Move the friction switch to x=5 m. Export checked comparison
-%      curves and bands as CSV data or the selected plot as PNG/PDF.
-% v27: Remove the raw GPS recordings and add a band around the real-speed fit.
-%      Use one Coulomb coefficient in both regions. Shift the entire hill
-%      left by 0.4 m, including the endpoints and friction switch.
-% v26: Restore the endpoint to 20.93 m and set the speed fit to zero at xStart.
-%      Add separately selectable +/-15% bands for both raw GPS speed curves.
-% v25: Extend the simulation endpoint to displayed x=40 m.
-%      Continue the hill polynomial beyond the previous x=20.93 m endpoint.
-%      Shift the speed fit vertically to 0.2 m/s at xStart=-0.4 m.
-% v24: Add comparison visibility checkboxes and an assumed +/-15% speed band.
-%      Extend the hill left by 0.4 m to displayed x=-0.4 m.
-% v23: Add adjustable Coulomb coefficient mu2 after the friction switch.
-%      Second-region resistance is b*v + mu2*m*g*cos(theta).
-%      Include both Coulomb regions in energy losses and CSV exports.
-% v22: Begin at source x=14.07 m, previous displayed x=2.65 m.
-%      This is just beyond the mu=0.03 acceleration threshold (14.06313 m).
-%      Rebase to displayed 0..20.93 m, with the friction switch at 7.35 m.
-% v21: Offset simulated coordinates by -10 m to align the start with GPS x=0.
-%      Use displayed 0..23.58 m for the same hill source interval 11.42..35 m.
-%      The friction transition is now at x=10 m. Initial speed is adjustable.
-% v20: Restrict both solvers and plots to displayed x=10..33.58 m.
-%      Initial velocity and zero relative elevation apply at x=10 m.
-% v19: Rebase the previous displayed -10 m to zero. Start both solvers
-%      at zero using the original hill interval 1.42..35 m (33.58 m long).
-%      Add adjustable initial speed. Move the previous 10 m friction
-%      boundary to 20 m on the rebased axis.
-% v18: Start at displayed x=-4 m (original x=6 m) with the fitted speed there.
-% v17: Start both solvers from rest at displayed x=-10 m (original x=0 m).
-%      Rebase relative elevation and elapsed distance at the new start.
-% Piecewise friction: use Coulomb resistance before displayed x=10 m
-% and viscous resistance from x=10 m onward in both solvers.
-% v11: Embed both supplied GPS recordings and overlay unfiltered recorded
-%      speeds as connected lines. Add a full-size Speed comparison tab.
-%      GPS distance is cumulative horizontal great-circle distance from
-%      each recording's first fix; displayed x=GPS distance-10 m.
-%      This origin assumes the first fix is the original course origin.
-%      CSV raw-speed columns are linearly interpolated at matching x.
-% v10: Start at displayed 4 m (original 14 m), finish at displayed 25 m.
-%      Fix initial speed to the reference value there: 1.855699280 m/s.
-% v9: Remove initial-speed control; fix v0=1.974809375 m/s in both models.
-% v8: Restrict BOTH solvers and reference curves to current x=5..25 m
-%     (original x=15..35 m). Keep the displayed coordinate at 5..25 m.
-%     Reset time/path distance/losses at x=5; match default initial speed
-%     to the real-speed fit at original 15 m. Height is zero at this start.
-% v7: Add adjustable total wheel viscous resistance Fviscous=cViscous*v.
-%     Apply the force in dynamics and its work integral in energy balance.
-%     Export viscous force/loss and plot cumulative viscous energy loss.
-%     Default cViscous=0 preserves v6; positive values enable damping.
-% v6: Simplify controls to mass, rolling resistance, initial speed, and time
-%     limit. Fix course/wheel/air settings and neglect aerodynamic drag in
-%     both models (CdA=0). Keep zero drag columns in CSVs for compatibility.
-% v5: Restrict both curves to original x=10..35 m; rebase horizontal x to
-%     0..25 m and elevation to zero at the new start. Preserve actual speed
-%     values; default initial speed equals the reference fit at original 10 m.
-%     Export original and local coordinates; correct energy-label newlines.
-% v4: Independent work-energy integration in horizontal x, three speed
-%     overlays, energy accounting, model agreement, and energy CSV export.
-% v3: Overlay supplied real-speed polynomial against horizontal x; export
-%     reference speed and simulated-minus-reference error at matched x.
-%     The supplied fit is shown unchanged, including its negative intercept.
-% v2: Polynomial elevation profile, local slope, horizontal x bounds,
-%     along-path distance integration, hill plots, and profile CSV columns.
-% v1: Original constant-slope GUI (preserved as KartVelocitySimulation.m).
-%
-% Assumptions: x and elevation are in meters; travel toward increasing x;
-% rolling without slip; negligible aerodynamic drag.
-% Before the switch, F = b1*v + mu1*m*g*cos(theta).
-% From the switch onward, F = b2*v + mu2*m*g*cos(theta).
-% mu1 and mu2 are stored as Crr and Crr2. b1 and b2 are stored as
-% cViscous1 and cViscous (N*s/m), representing all wheels together.
-% Linear resistance power is b*v^2. For each wheel, torque = k*omega,
-% where k = b*radius^2/nWheels (N*m*s). Coefficients describe all wheels.
-% Numeric b defaults are preserved from the supplied file; units have changed.
-% Curvature-induced normal-load changes, airborne motion, and rollback are
-% not modeled. Source x=13.67..39.47 m maps to section x=-0.8..25 m.
-% The original polynomial is extrapolated beyond its previous source end 35 m.
-% Mass and friction defaults are examples, not fitted measurements.
-% Hlocal(x) is the integral of the modified slope from the original start.
-% Initial slope and elevation datum are preserved; the total height drop changes.
-% GPS Speed uses the CSV x_m and speed_mps values without added offsets.
-% GPS shading is the assumed +/-15% speed band, not the CSV run envelope.
-% Initial speed is set by the user and applies to both solvers.
+function FinalSpeedVerificationPlotLagrange
 
-%% Defaults and input definitions
-% key, label, default, limits, tooltip
+
 spec = {
     'mass',       'Kart + rider mass (kg)',        117,    [0.001 Inf], 'Total mass INCLUDING all wheels.';
     'Crr',        'Coulomb friction 1, μ₁',       0.02,   [0 Inf],     'Dimensionless coefficient used before hill x = 11.6 m. FCoulomb = mu1*m*g*cos(theta).';
     'Crr2',       'Coulomb friction 2, μ₂',       0.03,   [0 Inf],     'Dimensionless coefficient used from hill x = 11.6 m onward. F = b2*v + mu2*m*g*cos(theta).';
     'cViscous1',  'Linear b₁ (N*s/m)',          15,      [0 Inf],     'Linear resistance before hill x = 11.6 m. Fviscous = b1*v.';
     'cViscous',   'Linear b₂ (N*s/m)',          15,      [0 Inf],     'Linear resistance from hill x = 11.6 m onward. Fviscous = b2*v.';
-    'v0',         'Initial velocity (m/s)',       0,      [0 Inf],     'Speed along the hill at displayed x = -0.8 m, used by both solvers.';
-    'tMax',       'Dynamic time limit (s)',             120,    [0.01 3600], 'Time limit for the dynamic solver. The energy method independently integrates the selected x interval until it finishes or stops.'
+    'v0',         'Initial velocity (m/s)',       0,      [0 Inf],     'Speed along the hill at displayed x = -0.8 m, used by all three solvers.';
+    'tMax',       'Time limit (s)',             120,    [0.01 3600], 'Time limit for dynamic and Lagrangian solvers. The energy method independently integrates the selected x interval until it finishes or stops.'
     };
-% Fixed model settings (not GUI controls).
+
 fixed = struct('xStart',-0.8,'xEnd',25,'angleVariationScale',0.5,'xFrictionSwitch',11.6,'sourceXOffset',14.47, ...
     'CdA',0,'rho',1.225,'nWheels',4,'radius',0.127,'Iwheel',0.0175, ...
     'speedErrorFraction',0.15,'simulatedSpeedOffset_mps',-0.15, ...
-    'comparisonXOffset_m',0.4); % v33 offset 0.8 minus a 0.4 m left shift.
+    'comparisonXOffset_m',0.4);
 nInputs = size(spec,1);
 fields = struct();
 lastResults = table();
 lastParameters = struct();
 lastEnergy = table();
+lastLagrangian = table();
 gpsSpeed = embeddedGPSSpeed();
 busy = false;
 blue = [0.08 0.38 0.68];
 
-%% Window and parameter panel
-fig = uifigure('Name','Kart Velocity Simulation v51 (-0.8 to 25 m)', ...
+
+fig = uifigure('Name','Kart Velocity: Dynamic / Energy / Lagrangian', ...
     'Position',[80 80 1250 780], 'Color',[0.96 0.97 0.98]);
 outer = uigridlayout(fig,[1 2]);
 outer.ColumnWidth = {335,'1x'};
@@ -186,7 +72,7 @@ energyExportButton = uibutton(controls,'Text','Export full energy CSV', ...
     'Enable','off','ButtonPushedFcn',@exportEnergy);
 energyExportButton.Layout.Row = nInputs+6; energyExportButton.Layout.Column = [1 2];
 
-%% Results area
+
 right = uigridlayout(outer,[3 1]);
 right.RowHeight = {82,'1x',55};
 right.Padding = [0 0 0 0];
@@ -207,7 +93,7 @@ visibilityGrid.RowSpacing = 5;
 visibilityGrid.Padding = [8 8 8 8];
 visibilityGrid.ColumnWidth = {'1x','1x','1x'};
 comparisonLabels = {'Dynamic','Energy balance','GPS Speed', ...
-    'Dynamic +/-15% band','GPS +/-15% band'};
+    'Dynamic +/-15% band','GPS +/-15% band','Lagrangian'};
 comparisonChecks = gobjects(1,numel(comparisonLabels));
 for k = 1:numel(comparisonLabels)
     comparisonChecks(k) = uicheckbox(visibilityGrid,'Text',comparisonLabels{k}, ...
@@ -241,11 +127,25 @@ energyGrid.RowHeight = {66,'1x','1x',60};
 energyNote = uilabel(energyGrid,'Text',sprintf([ ...
     'K = K0 + m*g*(h0-h) - WCoulomb - Wviscous;  K = 0.5*mEffective*v^2\n' ...
     'Before hill x = 11.6 m: mu1 and b1. From hill x = 11.6 m: mu2 and b2.\n' ...
-    'Course: -0.8 to 25 m; downhill angle rate reduced 50%. Time limit applies only to dynamics.']), ...
+    'Course: -0.8 to 25 m; downhill angle rate reduced 50%. Time limit applies to dynamic and Lagrangian solvers.']), ...
     'WordWrap','on','FontSize',12);
 axEnergy = uiaxes(energyGrid);
 axAgreement = uiaxes(energyGrid);
 energySummary = uilabel(energyGrid,'Text','Ready.','WordWrap','on');
+lagrangianTab = uitab(tabs,'Title','Lagrangian');
+lagrangianGrid = uigridlayout(lagrangianTab,[5 1]);
+lagrangianGrid.RowHeight = {90,'1x','1x',52,34};
+uilabel(lagrangianGrid,'Text',sprintf([ ...
+    'L = 0.5*mEffective*(1+h''(x)^2)*xdot^2 - m*g*h(x)\n' ...
+    'mEffective*((1+h''^2)*xddot + h''*h''''*xdot^2) + m*g*h'' = Qx\n' ...
+    'Qx = -(FCoulomb + b*v + Fdrag)*sqrt(1+h''^2); v = xdot*sqrt(1+h''^2)\n' ...
+    'Independent time integration; same wheel inertia, friction switch, and display offsets.']), ...
+    'WordWrap','on','FontSize',12);
+axLagrangianSpeed = uiaxes(lagrangianGrid);
+axLagrangianResidual = uiaxes(lagrangianGrid);
+lagrangianSummary = uilabel(lagrangianGrid,'Text','Ready.','WordWrap','on');
+lagrangianExportButton = uibutton(lagrangianGrid,'Text','Export full Lagrangian CSV', ...
+    'Enable','off','ButtonPushedFcn',@exportLagrangian);
 plotGrid = uigridlayout(motionTab,[2 2]);
 plotGrid.Padding = [0 0 0 0];
 axSpeed = uiaxes(plotGrid); axSpeed.Layout.Row = 1; axSpeed.Layout.Column = 1;
@@ -263,7 +163,7 @@ statusLabel = uilabel(right,'Text','Ready.','WordWrap','on', ...
     'FontColor',[0.30 0.34 0.40]);
 runSimulation();
 
-%% Callbacks
+
     function updateComparisonVisibility(varargin)
         handles = axComparison.UserData;
         if isempty(handles) || ~all(isgraphics(handles)), return; end
@@ -292,6 +192,7 @@ runSimulation();
     function parametersChanged(~,~)
         exportButton.Enable = 'off';
         energyExportButton.Enable = 'off';
+        lagrangianExportButton.Enable = 'off';
         comparisonExportButton.Enable = 'off';
         if autoRun.Value
             runSimulation();
@@ -313,8 +214,9 @@ runSimulation();
         runButton.Enable = 'off';
         exportButton.Enable = 'off';
         energyExportButton.Enable = 'off';
+        lagrangianExportButton.Enable = 'off';
         comparisonExportButton.Enable = 'off';
-        cleanup = onCleanup(@finishRun); %#ok<NASGU>
+        cleanup = onCleanup(@finishRun);
         statusLabel.Text = 'Calculating...';
         drawnow limitrate nocallbacks
         try
@@ -328,16 +230,29 @@ runSimulation();
             end
             [result,p,message] = simulateKart(p);
             [energy,energyMessage] = simulateEnergy(p);
-            % Compare at the same x, not at the same row or solver time.
+            [lagrangian,lagrangianMessage] = simulateLagrangian(p);
+
             result.energy_kinetic_J = sampleAtX(energy.x_m,energy.kinetic_J,result.x_m);
             result.energy_speed_mps = sqrt(2*max(result.energy_kinetic_J,0)/p.mEffective);
             result.energy_speed_mps(~isfinite(result.energy_kinetic_J)) = NaN;
             result.dynamic_minus_energy_mps = result.speed_mps-result.energy_speed_mps;
-            % Apply plotting offsets after solving the physical motion.
+
+            [lagX,lagIndices] = unique(lagrangian.x_m,'stable');
+            lagK = sampleAtX(lagX,lagrangian.kinetic_J(lagIndices),result.x_m);
+            result.lagrangian_speed_mps = sqrt(2*max(lagK,0)/p.mEffective);
+            result.lagrangian_speed_mps(~isfinite(lagK)) = NaN;
+            result.lagrangian_minus_dynamic_mps = result.lagrangian_speed_mps-result.speed_mps;
+            lagrangian.comparison_x_m = lagrangian.x_m+p.comparisonXOffset_m;
+            lagrangian.displayed_speed_mps = lagrangian.speed_mps+p.simulatedSpeedOffset_mps;
+            lagrangian.gps_speed_mps = interp1(gpsSpeed.x_m,gpsSpeed.speed_mps, ...
+                lagrangian.comparison_x_m,'linear',NaN);
+            lagrangian.displayed_speed_error_mps = lagrangian.displayed_speed_mps-lagrangian.gps_speed_mps;
+            result.lagrangian_displayed_speed_mps = result.lagrangian_speed_mps+p.simulatedSpeedOffset_mps;
+
             result.comparison_x_m = result.x_m+p.comparisonXOffset_m;
             energy.comparison_x_m = energy.x_m+p.comparisonXOffset_m;
-            % Linear interpolation matches the straight segments of the GPS curve.
-            % NaN outside the supplied CSV range; never extrapolate GPS speeds.
+
+
             result.gps_speed_mps = interp1(gpsSpeed.x_m,gpsSpeed.speed_mps, ...
                 result.comparison_x_m,'linear',NaN);
             energy.gps_speed_mps = interp1(gpsSpeed.x_m,gpsSpeed.speed_mps, ...
@@ -356,13 +271,14 @@ runSimulation();
             energy.gps_speed_lower_mps = energy.gps_speed_mps-p.speedErrorFraction*abs(energy.gps_speed_mps);
             energy.gps_speed_upper_mps = energy.gps_speed_mps+p.speedErrorFraction*abs(energy.gps_speed_mps);
             lastEnergy = energy;
+            lastLagrangian = lagrangian;
             lastResults = result;
             lastParameters = p;
-            fig.UserData = struct('Results',result,'Energy',energy,'Parameters',p,'GPSSpeed',gpsSpeed);
+            fig.UserData = struct('Results',result,'Energy',energy,'Lagrangian',lagrangian,'Parameters',p,'GPSSpeed',gpsSpeed);
             plotResult(axSpeed,result.time_s,result.displayed_speed_mps, ...
                 'Dynamic velocity over time','Time (s)','Speed (m/s)');
-            drawComparison(axDistanceSpeed,result,energy,p,false);
-            drawComparison(axComparison,result,energy,p,true);
+            drawComparison(axDistanceSpeed,result,energy,lagrangian,p,false);
+            drawComparison(axComparison,result,energy,lagrangian,p,true);
             plotResult(axAccel,result.time_s,result.acceleration_mps2, ...
                 'Acceleration over time','Time (s)','Acceleration (m/s^2)');
             plotResult(axDistance,result.time_s,result.distance_m, ...
@@ -381,6 +297,23 @@ runSimulation();
                 'Coulomb + viscous losses','Viscous loss only'},'Location','best');
             plotResult(axAgreement,result.x_m,result.dynamic_minus_energy_mps, ...
                 'Dynamic speed minus energy speed','Section coordinate x (m)','Speed difference (m/s)');
+            hold(axAgreement,'on');
+            plot(axAgreement,result.x_m,result.lagrangian_minus_dynamic_mps,'-.', ...
+                'Color',[0.58 0.20 0.75],'LineWidth',1.8);
+            hold(axAgreement,'off');
+            title(axAgreement,'Agreement at matched physical positions');
+            legend(axAgreement,{'Dynamic - energy','Lagrangian - dynamic'},'Location','best');
+            plotResult(axLagrangianSpeed,lagrangian.time_s,lagrangian.speed_mps, ...
+                'Lagrangian speed (physical, without display offset)','Time (s)','Speed (m/s)');
+            plotResult(axLagrangianResidual,lagrangian.time_s,lagrangian.balance_residual_J, ...
+                'K + potential change + losses - K0','Time (s)','Energy residual (J)');
+            lagDifference = result.lagrangian_minus_dynamic_mps;
+            lagDifference = lagDifference(isfinite(lagDifference));
+            if isempty(lagDifference), maxLagDifference = NaN; else, maxLagDifference = max(abs(lagDifference)); end
+            lagrangianSummary.Text = sprintf(['%s Final: %.3f m/s at %.2f s.\n' ...
+                'Max |Lagrangian - dynamic|: %.3g m/s | Max energy residual: %.3g J'], ...
+                lagrangianMessage,lagrangian.speed_mps(end),lagrangian.time_s(end), ...
+                maxLagDifference,max(abs(lagrangian.balance_residual_J)));
             difference = result.dynamic_minus_energy_mps;
             difference = difference(isfinite(difference));
             if isempty(difference), maxDifference = NaN; else, maxDifference = max(abs(difference)); end
@@ -409,9 +342,10 @@ runSimulation();
                 result.time_s(end),result.distance_m(end));
             metricMass.Text = sprintf('Effective mass\n%.2f kg (+%.2f)', ...
                 p.mEffective,p.mEffective-p.mass);
-            statusLabel.Text = message;
+            statusLabel.Text = sprintf('%s %s',message,lagrangianMessage);
             exportButton.Enable = 'on';
             energyExportButton.Enable = 'on';
+            lagrangianExportButton.Enable = 'on';
             updateComparisonVisibility();
         catch err
             statusLabel.Text = 'Simulation failed. Check the inputs; any existing plots show the previous run.';
@@ -431,11 +365,13 @@ runSimulation();
         ax.FontSize = 11;
     end
 
-    function drawComparison(ax,result,energy,p,large)
-        % Crop plotting copies only. Full solver tables retain physical history.
+    function drawComparison(ax,result,energy,lagrangian,p,large)
+
         [dynamicX,dynamicValues] = trimComparisonSamples(result.comparison_x_m, ...
             [result.displayed_speed_mps result.dynamic_speed_lower_mps result.dynamic_speed_upper_mps]);
         [energyX,energySpeed] = trimComparisonSamples(energy.comparison_x_m,energy.displayed_speed_mps);
+        [lagrangianX,lagrangianSpeed] = trimComparisonSamples( ...
+            lagrangian.comparison_x_m,lagrangian.displayed_speed_mps);
         cla(ax);
         hold(ax,'on');
         gpsColor = [0.90 0.35 0.08];
@@ -457,14 +393,16 @@ runSimulation();
             'Color',blue,'LineWidth',2.2,'Marker','none');
         hEnergy = plot(ax,energyX,energySpeed,'--', ...
             'Color',[0.05 0.60 0.36],'LineWidth',2.0,'Marker','none');
+        hLagrangian = plot(ax,lagrangianX,lagrangianSpeed,':', ...
+            'Color',[0.58 0.20 0.75],'LineWidth',2.8,'Marker','none');
         hGPS = plot(ax,gpsX,gpsV,'-', ...
             'Color',gpsColor,'LineWidth',2.2,'Marker','none');
         hold(ax,'off');
         grid(ax,'on');
-        % Show all GPS samples without extending the simulated hill interval.
+
         xlim(ax,[min(0,gpsX(1)), ...
             max(p.xEnd+p.comparisonXOffset_m,gpsX(end))]);
-        visibleValues = [dynamicValues(:,1);energySpeed;gpsV];
+        visibleValues = [dynamicValues(:,1);energySpeed;lagrangianSpeed;gpsV];
         if large
             visibleValues = [visibleValues;dynamicValues(:,2); ...
                 dynamicValues(:,3);gpsLower;gpsUpper];
@@ -474,14 +412,14 @@ runSimulation();
         ylim(ax,[bottom-0.02*max(1,top-bottom),top+0.08*max(1,top-bottom)]);
         title(ax,'Simulated and GPS speed');
         xlabel(ax,'Comparison coordinate (m)'); ylabel(ax,'Speed (m/s)');
-        labels = {'Dynamic','Energy balance','GPS Speed'};
+        labels = {'Dynamic','Energy balance','GPS Speed','Lagrangian'};
         if large
             ax.FontSize = 13;
-            ax.UserData = [hDynamic hEnergy hGPS hBand hGPSBand];
+            ax.UserData = [hDynamic hEnergy hGPS hBand hGPSBand hLagrangian];
             updateComparisonVisibility();
         else
             ax.FontSize = 10;
-            legend(ax,[hDynamic hEnergy hGPS],labels,'Location','best','FontSize',8);
+            legend(ax,[hDynamic hEnergy hGPS hLagrangian],labels,'Location','best','FontSize',8);
         end
     end
 
@@ -514,8 +452,8 @@ runSimulation();
                             lowerSpeed = nan(size(y));
                             upperSpeed = nan(size(y));
                         else
-                            % Each filled polygon stores its lower edge forward
-                            % and its upper edge in reverse sample order.
+
+
                             count = numel(x)/2;
                             x = x(1:count);
                             speed = nan(size(x));
@@ -526,10 +464,10 @@ runSimulation();
                         rows = table(series,x,speed,lowerSpeed,upperSpeed, ...
                             'VariableNames',{'series','x_m','speed_mps', ...
                             'lower_speed_mps','upper_speed_mps'});
-                        % NaN placeholders represent a simulated curve that
-                        % never reached the visible comparison interval.
+
+
                         rows = rows(isfinite(rows.x_m),:);
-                        exported = [exported;rows]; %#ok<AGROW>
+                        exported = [exported;rows];
                     end
                     writetable(exported,destination);
                 case '.png'
@@ -550,7 +488,7 @@ runSimulation();
         [name,folder] = uiputfile('*.csv','Export simulation results','KartVelocityResults_v51.csv');
         if isequal(name,0), return; end
         try
-            % Repeat the run inputs so each CSV is self-contained.
+
             exported = lastResults;
             keys = fieldnames(lastParameters);
             for j = 1:numel(keys)
@@ -558,6 +496,23 @@ runSimulation();
             end
             writetable(exported,fullfile(folder,name));
             statusLabel.Text = ['Exported results and run parameters to ' fullfile(folder,name)];
+        catch err
+            uialert(fig,err.message,'Export error');
+        end
+    end
+
+    function exportLagrangian(~,~)
+        if isempty(lastLagrangian), return; end
+        [name,folder] = uiputfile('*.csv','Export full Lagrangian results','KartLagrangianResults.csv');
+        if isequal(name,0), return; end
+        try
+            exported = lastLagrangian;
+            keys = fieldnames(lastParameters);
+            for j = 1:numel(keys)
+                exported.(['input_' keys{j}]) = repmat(lastParameters.(keys{j}),height(exported),1);
+            end
+            writetable(exported,fullfile(folder,name));
+            statusLabel.Text = ['Exported Lagrangian results to ' fullfile(folder,name)];
         catch err
             uialert(fig,err.message,'Export error');
         end
@@ -581,25 +536,23 @@ runSimulation();
     end
 end
 
-%% Dynamics on y = h(x)
+
 function [results,p,status] = simulateKart(p)
-% Exact transcription of the supplied polynomial (descending powers).
+
 p.sourceXStart = p.sourceXOffset+p.xStart;
 p.sourceXEnd = p.sourceXOffset+p.xEnd;
 p.sourceProfileCoefficients = [1.616e-8 -2.653e-6 0.000168 -0.005153 0.07678 -0.5357 1442];
 p.sourceElevationAtStart = polyval(p.sourceProfileCoefficients,p.sourceXStart);
 p.profileCoefficients = shiftPolynomial(p.sourceProfileCoefficients,p.sourceXOffset);
 p.profileCoefficients(end) = p.profileCoefficients(end)-p.sourceElevationAtStart;
-p.slopeCoefficients = polyder(p.profileCoefficients); % Original, unmodified slope.
+p.slopeCoefficients = polyder(p.profileCoefficients);
 p.startAngle_rad = -atan(polyval(p.slopeCoefficients,p.xStart));
 p.mEffective = p.mass + p.nWheels*p.Iwheel/p.radius^2;
-p.dragFactor = 0.5*p.rho*p.CdA; % Exactly zero: drag is neglected.
+p.dragFactor = 0.5*p.rho*p.CdA;
 p.linearPerWheel_Nms = p.cViscous*p.radius^2/p.nWheels;
 p.linear1PerWheel_Nms = p.cViscous1*p.radius^2/p.nWheels;
 
-% State = [horizontal x; speed along path; distance along path].
-% q = sqrt(1 + h'(x)^2), theta = -atan(h'(x)).
-% dx/dt = v/q; ds/dt = v.
+
 [initialAcceleration,~,~,~,~] = localForces(p.xStart,p.v0,p,true);
 if p.v0 == 0 && initialAcceleration <= 0
     time_s = [0;p.tMax];
@@ -635,7 +588,7 @@ end
 x_m = state(:,1);
 distance_m = state(:,3);
 elevation_m = hillHeight(x_m,p);
-original_x_m = x_m+p.sourceXOffset; % Source coordinate of the hill polynomial.
+original_x_m = x_m+p.sourceXOffset;
 horizontal_from_start_m = x_m-p.xStart;
 original_elevation_m = elevation_m+p.sourceElevationAtStart;
 speed_mps = max(state(:,2),0);
@@ -651,7 +604,7 @@ function dydt = kartODE(~,y,p,useCoulomb)
 v = max(y(2),0);
 slope = hillSlope(y(1),p);
 a = localForces(y(1),v,p,useCoulomb);
-% Smooth trial steps through zero speed; terminal event truncates the run.
+
 dydt = [v/sqrt(1+slope^2);a;v];
 end
 
@@ -662,7 +615,7 @@ angleDeg = -atan(slope)*180/pi;
 Fgravity = -p.mass*9.81*slope./q;
 [Frolling,Fviscous] = frictionForces(v,q,p,useCoulomb);
 Fdrag = p.dragFactor*v.^2;
-% Retain the uploaded dynamic model's acceleration scaling.
+
 a = ((Fgravity-Frolling-Fdrag-Fviscous)/p.mEffective);
 end
 
@@ -676,8 +629,8 @@ end
 
 function [value,isterminal,direction] = stopEvents(t,y,p,xTarget)
 stopValue = y(2);
-% Starting from rest with positive acceleration is handled separately from
-% a later downward zero-speed crossing. Avoid a spurious root at release.
+
+
 if t == 0 && p.v0 == 0, stopValue = 1; end
 value = [xTarget-y(1);stopValue];
 isterminal = [1;1];
@@ -691,16 +644,103 @@ for k = 1:numel(names), values(k) = s.(names{k}); end
 end
 
 
-%% Independent work-energy method (distance is the independent variable)
+function [results,status] = simulateLagrangian(p)
+
+
+q0 = sqrt(1+hillSlope(p.xStart,p)^2);
+y0 = [p.xStart;p.v0/q0;0;0;0;0];
+initialDerivative = lagrangianODE(0,y0,p,true);
+if p.v0 == 0 && initialDerivative(2) <= 0
+    time_s = [0;p.tMax];
+    state = [y0.';y0.'];
+    status = 'Lagrangian: remained at rest.';
+else
+    options = odeset('RelTol',1e-8, ...
+        'AbsTol',[1e-9 1e-10 1e-9 1e-7 1e-7 1e-7],'MaxStep',0.05);
+    firstOptions = odeset(options,'Events',@(t,y) stopEvents(t,y,p,p.xFrictionSwitch));
+    [time_s,state,~,~,eventIndex] = ode45(@(t,y) lagrangianODE(t,y,p,true), ...
+        [0 p.tMax],y0,firstOptions);
+    reachedEnd = false;
+    if any(eventIndex == 1)
+        state(end,1) = p.xFrictionSwitch;
+        if ~any(eventIndex == 2) && state(end,2) > 0 && time_s(end) < p.tMax
+            endOptions = odeset(options,'Events',@(t,y) stopEvents(t,y,p,p.xEnd));
+            [nextTime,nextState,~,~,eventIndex] = ode45(@(t,y) lagrangianODE(t,y,p,false), ...
+                [time_s(end) p.tMax],state(end,:).',endOptions);
+            time_s = [time_s;nextTime(2:end)];
+            state = [state;nextState(2:end,:)];
+            reachedEnd = any(eventIndex == 1);
+        end
+    end
+    if reachedEnd
+        status = 'Lagrangian: reached end x.';
+    elseif any(eventIndex == 2)
+        state(end,2) = 0;
+        status = 'Lagrangian: stopped before end x (no rollback).';
+    else
+        status = 'Lagrangian: reached time limit.';
+    end
+end
+x_m = state(:,1);
+horizontal_velocity_mps = max(state(:,2),0);
+distance_m = state(:,3);
+slope = hillSlope(x_m,p);
+curvature = hillSecondDerivative(x_m,p);
+q = sqrt(1+slope.^2);
+speed_mps = q.*horizontal_velocity_mps;
+[rolling_force_N,viscous_force_N] = frictionForces(speed_mps,q,p,x_m < p.xFrictionSwitch);
+drag_force_N = p.dragFactor*speed_mps.^2;
+generalized_force_N = -(rolling_force_N+viscous_force_N+drag_force_N).*q;
+horizontal_acceleration_mps2 = (generalized_force_N-p.mass*9.81*slope ...
+    -p.mEffective*slope.*curvature.*horizontal_velocity_mps.^2)./(p.mEffective*q.^2);
+acceleration_mps2 = q.*horizontal_acceleration_mps2 ...
+    +slope.*curvature./q.*horizontal_velocity_mps.^2;
+stationary = speed_mps <= 0 & acceleration_mps2 < 0;
+horizontal_acceleration_mps2(stationary) = 0;
+acceleration_mps2(stationary) = 0;
+elevation_m = hillHeight(x_m,p);
+original_x_m = x_m+p.sourceXOffset;
+kinetic_J = 0.5*p.mEffective*speed_mps.^2;
+initial_kinetic_J = repmat(0.5*p.mEffective*p.v0^2,numel(x_m),1);
+potential_change_J = p.mass*9.81*(elevation_m-hillHeight(p.xStart,p));
+rolling_loss_J = state(:,4);
+viscous_loss_J = state(:,5);
+drag_loss_J = state(:,6);
+balance_residual_J = kinetic_J+potential_change_J+rolling_loss_J ...
+    +viscous_loss_J+drag_loss_J-initial_kinetic_J;
+results = table(time_s,x_m,original_x_m,distance_m,elevation_m, ...
+    horizontal_velocity_mps,horizontal_acceleration_mps2,speed_mps,acceleration_mps2, ...
+    rolling_force_N,viscous_force_N,drag_force_N,generalized_force_N, ...
+    kinetic_J,initial_kinetic_J,potential_change_J,rolling_loss_J,viscous_loss_J, ...
+    drag_loss_J,balance_residual_J);
+end
+
+function dydt = lagrangianODE(~,y,p,useFirstRegion)
+slope = hillSlope(y(1),p);
+curvature = hillSecondDerivative(y(1),p);
+q = sqrt(1+slope^2);
+u = max(y(2),0);
+v = q*u;
+[Frolling,Fviscous] = frictionForces(v,q,p,useFirstRegion);
+Fdrag = p.dragFactor*v^2;
+Qx = -(Frolling+Fviscous+Fdrag)*q;
+udot = (Qx-p.mass*9.81*slope-p.mEffective*slope*curvature*u^2) ...
+    /(p.mEffective*q^2);
+dydt = [u;udot;v;Frolling*v;Fviscous*v;Fdrag*v];
+end
+
+function curvature = hillSecondDerivative(x,p)
+
+sourceSlope = polyval(p.slopeCoefficients,x);
+sourceCurvature = polyval(polyder(p.slopeCoefficients),x);
+slope = hillSlope(x,p);
+curvature = p.angleVariationScale*(1+slope.^2).*sourceCurvature./(1+sourceSlope.^2);
+end
+
+
 function [results,status] = simulateEnergy(p)
-% K includes translation and wheel rotation. With q = sqrt(1+h'(x)^2):
-%   dK/dx = -m*g*h'(x) - (FCoulomb + Fviscous + Fdrag)*q
-% Energy state = [kinetic energy; aerodynamic work loss; viscous work loss].
-% Fviscous = b*v, dWviscous/dx = b*v*q; power = b*v^2.
-% Coulomb work simplifies because N~m*g/q and ds=q*dx:
-%   WCoulomb = m*g*(mu1*(min(x,xFrictionSwitch)-xStart)
-%                      + mu2*max(x-xFrictionSwitch,0)).
-% This solver does not use dynamic speeds, times, or accelerations.
+
+
 K0 = 0.5*p.mEffective*p.v0^2;
 initialSlope = hillSlope(p.xStart,p);
 initialGradient = -p.mass*9.81*(initialSlope+p.Crr);
@@ -730,7 +770,7 @@ end
 kinetic_J = max(state(:,1),0);
 speed_mps = sqrt(2*kinetic_J/p.mEffective);
 elevation_m = hillHeight(x_m,p);
-original_x_m = x_m+p.sourceXOffset; % Source coordinate of the hill polynomial.
+original_x_m = x_m+p.sourceXOffset;
 horizontal_from_start_m = x_m-p.xStart;
 original_elevation_m = elevation_m+p.sourceElevationAtStart;
 initial_kinetic_J = repmat(K0,numel(x_m),1);
@@ -740,7 +780,7 @@ rolling_loss_J = p.mass*9.81*( ...
     p.Crr2*max(x_m-p.xFrictionSwitch,0));
 drag_loss_J = state(:,2);
 viscous_loss_J = state(:,3);
-% Conservation diagnostic: should remain near zero, including with losses.
+
 balance_residual_J = kinetic_J-initial_kinetic_J-gravity_work_J+rolling_loss_J+drag_loss_J+viscous_loss_J;
 results = table(x_m,original_x_m,horizontal_from_start_m,elevation_m,original_elevation_m,speed_mps, ...
     kinetic_J,initial_kinetic_J,gravity_work_J,rolling_loss_J,drag_loss_J,viscous_loss_J,balance_residual_J);
@@ -765,8 +805,8 @@ direction = -1;
 end
 
 function sampled = sampleAtX(x,values,query)
-% Interpolate kinetic energy before taking sqrt, so release from rest is
-% represented accurately. Never extrapolate past an energy-method stop.
+
+
 sampled = nan(size(query));
 tolerance = 1e-7;
 if numel(x) == 1
@@ -780,15 +820,15 @@ end
 
 
 function slope = hillSlope(x,p)
-% Reduce spatial downhill-angle variation exactly 50%, keeping its start value.
+
 originalAngle = -atan(polyval(p.slopeCoefficients,x));
 angle = p.startAngle_rad+p.angleVariationScale*(originalAngle-p.startAngle_rad);
 slope = -tan(angle);
 end
 
 function elevation = hillHeight(x,p)
-% Integrate exactly the same slope used for gravity and path geometry.
-% Accumulate between sorted query points to avoid repeated long integrals.
+
+
 shape = size(x);
 [nodes,~,mapping] = unique([p.xStart;x(:)]);
 heights = zeros(size(nodes));
@@ -805,7 +845,7 @@ elevation = reshape(heights(mapping(2:end)),shape);
 end
 
 function shifted = shiftPolynomial(coefficients,offset)
-% Horner composition gives coefficients of P(x+offset), without refitting.
+
 shifted = coefficients(1);
 for k = 2:numel(coefficients)
     shifted = conv(shifted,[1 offset]);
@@ -815,12 +855,12 @@ end
 
 
 function [xVisible,yVisible] = trimComparisonSamples(x,y)
-% Clip connected comparison curves at x=0, interpolating the boundary.
-% Input x is nondecreasing; y may contain speed and both band edges.
+
+
 firstVisible = find(x >= 0,1,'first');
 if isempty(firstVisible)
-    % Keep a graphics handle for checkboxes, even when the curve is empty.
-    % Selected CSV export removes these placeholders.
+
+
     xVisible = NaN;
     yVisible = nan(1,size(y,2));
     return
@@ -837,13 +877,9 @@ end
 end
 
 
-%% Embedded averaged GPS speed (no external files required)
 function gps = embeddedGPSSpeed()
-% Source: AveragedKartSpeed_0_to_30m.csv, columns x_m and speed_mps.
-% Exact supplied samples; no smoothing, shifts, or speed fit applied.
-% The CSV run1/run2 and lower/upper envelope columns are not plotted.
-% The selectable GPS band uses the existing assumed +/-15% speed error.
-% Columns: comparison coordinate (m), averaged GPS speed (m/s).
+
+
 data = [
     0.0 0.0;
     1.0 0.3931;
