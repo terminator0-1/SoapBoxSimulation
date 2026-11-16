@@ -1,45 +1,10 @@
-function FinalCourseSimulation
-% KARTVELOCITYSIMULATION_V48 Kart dynamics on the merged hill profile.
-% Save as KartVelocitySimulation_v48.m and run KartVelocitySimulation_v48.
-% Requires MATLAB with uifigure/uigridlayout support; no extra toolboxes.
-%
-% Terrain: final smoothed distance_m and height_m from MergedHillProfile(1).mat.
-% All 481 samples are embedded below. No external data files are required.
-% A light Gaussian filter (sigma 0.75 m) smooths terrain slope. Its PCHIP
-% interpolant is integrated exactly to define elevation for both solvers. Distance is treated
-% as horizontal course distance, consistent with the original model.
-% Source terrain: 0 to 119.97943501176142 m, with endpoints 8 and 0 m.
-% Both simulations are limited to physical hill x = 116 m.
-% The hill plot shows the supplied elevation; solver elevation_m is relative
-% to the release point, and original_elevation_m retains the supplied datum.
-% GPS-derived terrain ends at x = 93.43929307788882 m; a model tail follows.
-%
-% Three friction sections in physical hill coordinates:
-% 1: 0 <= x < 31 m; 2: 31 <= x < 93 m; 3: x >= 93 m.
-% F = mu(x)*m*g*cos(theta) + b(x)*v, with independently editable mu and b.
-% Defaults in every section: mu = 0.02, b = 18 N*s/m.
-% Surface obstacles override only mu within their span, even across a section
-% boundary. The local section still supplies b. Ramps add height and slope.
-% A configurable forward push (default 200 N) acts over the first 1 m of
-% along-track travel. Its force and work are included in both solvers.
-% Wheel rotational inertia is included; aerodynamic drag is neglected.
-% Rollback, airborne motion, and curvature-dependent normal loads are omitted.
-% Comparison speed is the recorded Position.speed from RealKartData(1).mat.
-% Its distance is cumulative horizontal GPS distance from the first fix,
-% shifted left by 19.07 m for comparison (as in the supplied edited file).
-% Negative-distance speed samples are hidden. Two display anchors at x=0
-% create a vertical 0-to-4.19 m/s start. The curve is clipped at 116 m,
-% with one linearly interpolated endpoint at 116 m.
-% This vertical display step does not assert measured instantaneous acceleration.
-% The existing simulation comparison offset is retained; automatic terrain
-% alignment is not applied. Recorded speed is treated as m/s.
+function FinalCourseSimulationLagrange
 
-%% Defaults and input definitions
-% key, label, default, limits, tooltip
+
 spec = {
     'mass', 'Kart + rider mass (kg)', 117, [0.001 Inf], 'Total mass INCLUDING all wheels.';
-    'v0', 'Initial velocity (m/s)', 0, [0 Inf], 'Speed along the hill at x = 0 m, used by both solvers.';
-    'tMax', 'Dynamic time limit (s)', 120, [0.01 3600], 'Time limit for the dynamic solver.';
+    'v0', 'Initial velocity (m/s)', 0, [0 Inf], 'Speed along the hill at x = 0 m, used by all three solvers.';
+    'tMax', 'Time limit (s)', 120, [0.01 3600], 'Time limit for dynamic and Lagrangian solvers.';
     'pushForce_N', 'Start push over 1 m (N)', 200, [0 Inf], 'Constant forward force along the first 1 m of travel. Set 0 to disable.';
     'Crr1', 'Coulomb coefficient, μ₁', 0.02, [0 Inf], 'Section 1: 0 <= x < 31 m. Surface obstacles override this locally.';
     'b1', 'Linear b₁ (N*s/m)', 18, [0 Inf], 'Section 1: Fviscous = b1*v. Surface obstacles do not change b.';
@@ -48,18 +13,20 @@ spec = {
     'Crr3', 'Coulomb coefficient, μ₃', 0.02, [0 Inf], 'Section 3: x >= 93 m. Surface obstacles override this locally.';
     'b3', 'Linear b₃ (N*s/m)', 18, [0 Inf], 'Section 3: Fviscous = b3*v. Surface obstacles do not change b.'
     };
-% Fixed model settings (not GUI controls).
+
 fixed = struct('xStart',0,'xEnd',116,'pushDistance_m',1,'sourceXOffset',0,'sectionBoundary1_m',31,'sectionBoundary2_m',93, ...
     'CdA',0,'rho',1.225,'nWheels',4,'radius',0.127,'Iwheel',0.0175, ...
     'speedErrorFraction',0.15,'simulatedSpeedOffset_mps',0, ...
-    'comparisonXOffset_m',0.4); % v33 offset 0.8 minus a 0.4 m left shift.
+    'comparisonXOffset_m',0.4,'angleSmoothingFraction',0,'lagrangianAngleSmoothingFraction',0.30,'angleSmoothingSigma_m',10.5);
 nInputs = size(spec,1);
 nRiderInputs = 4;
 fields = struct();
 obstacles = emptyObstacles();
 lastResults = table();
 lastParameters = struct();
+lastLagrangianParameters = struct();
 lastEnergy = table();
+lastLagrangian = table();
 gpsSpeed = embeddedGPSSpeed(fixed.xEnd);
 busy = false;
 ink = [0.12 0.19 0.27];
@@ -72,8 +39,8 @@ animationClock = [];
 animationTimer = [];
 animationPlots = struct();
 
-%% Window and parameter panel
-fig = uifigure('Name','Downhill Kart | Dynamics & Energy', ...
+
+fig = uifigure('Name','Downhill Kart | Dynamics, Energy & Lagrangian', ...
     'Position',[45 35 1280 870], 'Color',[0.96 0.97 0.98], 'Visible','off');
 outer = uigridlayout(fig,[4 2]);
 outer.RowHeight = {40,'1x',72,30};
@@ -85,7 +52,7 @@ header = uigridlayout(outer,[1 3]);
 header.Layout.Row = 1; header.Layout.Column = [1 2];
 header.ColumnWidth = {'1x',145,145};
 header.Padding = [0 0 0 0];
-uilabel(header,'Text','DOWNHILL / Dynamics & Energy', ...
+uilabel(header,'Text','DOWNHILL / Three-model comparison', ...
     'FontSize',23,'FontWeight','bold','FontColor',ink);
 uibutton(header,'Text','Import settings','ButtonPushedFcn',@importSettings);
 uibutton(header,'Text','Export settings','ButtonPushedFcn',@exportSettings);
@@ -146,7 +113,7 @@ resetButton.Layout.Row = nRiderInputs+3; resetButton.Layout.Column = [1 2];
 exportButton = uibutton(controls,'Text','Export results to CSV', ...
     'Enable','off','ButtonPushedFcn',@exportResults);
 exportButton.Layout.Row = nRiderInputs+4; exportButton.Layout.Column = [1 2];
-note = uilabel(controls,'Text',sprintf(['Simulation: x = 0-116 m; lightly smoothed terrain slope.\n' ...
+note = uilabel(controls,'Text',sprintf(['Simulation: x = 0-116 m; extra 30%% smoothing only for Lagrangian.\n' ...
     'Resistance: F = b(x)*v + mu(x)*m*g*cos(theta).\n' ...
     'Edit mu and b in the Friction sections tab. Surfaces override only mu.\n' ...
     'Push acts over the first 1 m of travel (0 N disables).\n' ...
@@ -212,7 +179,6 @@ obstacleTab = uitab(leftTabs,'Title','Course obstacles');
     end
 
 
-%% Results area
 metrics = uigridlayout(outer,[1 3]);
 metrics.Layout.Row = 3; metrics.Layout.Column = [1 2];
 metrics.Padding = [12 6 12 6];
@@ -262,7 +228,7 @@ visibilityGrid.RowSpacing = 5;
 visibilityGrid.Padding = [8 8 8 8];
 visibilityGrid.ColumnWidth = {'1x','1x','1x'};
 comparisonLabels = {'Dynamic','Energy balance','Real kart speed', ...
-    'Dynamic +/-15% band','Real kart +/-15% band'};
+    'Dynamic +/-15% band','Real kart +/-15% band','Lagrangian'};
 comparisonChecks = gobjects(1,numel(comparisonLabels));
 for k = 1:numel(comparisonLabels)
     comparisonChecks(k) = uicheckbox(visibilityGrid,'Text',comparisonLabels{k}, ...
@@ -296,11 +262,25 @@ energyGrid.RowHeight = {66,'1x','1x',60};
 energyNote = uilabel(energyGrid,'Text',sprintf([ ...
     'K = K0 + m*g*(h0-h) + Wpush - WCoulomb - Wviscous;  K = 0.5*mEffective*v^2\n' ...
     'Linear b(x)*v with separate mu and b in 0-31, 31-93, and 93 m onward.\n' ...
-    'Course: 0 to 116 m (smoothed merged hill profile). Time limit applies only to dynamics.']), ...
+    'Course: 0 to 116 m (smoothed merged hill profile). Time limit applies to dynamic and Lagrangian solvers.']), ...
     'WordWrap','on','FontSize',12);
 axEnergy = uiaxes(energyGrid);
 axAgreement = uiaxes(energyGrid);
 energySummary = uilabel(energyGrid,'Text','Ready.','WordWrap','on');
+lagrangianTab = uitab(tabs,'Title','Lagrangian');
+lagrangianGrid = uigridlayout(lagrangianTab,[5 1]);
+lagrangianGrid.RowHeight = {90,'1x','1x',52,34};
+uilabel(lagrangianGrid,'Text',sprintf([ ...
+    'L = 0.5*mEffective*(1+h''(x)^2)*xdot^2 - m*g*h(x)\n' ...
+    'mEffective*((1+h''^2)*xddot + h''*h''''*xdot^2) + m*g*h'' = Qx\n' ...
+    'Qx = (Fpush - FCoulomb - b*v - Fdrag)*sqrt(1+h''^2); v = xdot*sqrt(1+h''^2)\n' ...
+    'Lagrangian only: extra 30%% angle smoothing. Same wheel inertia, forces, and obstacles.']), ...
+    'WordWrap','on','FontSize',12);
+axLagrangianSpeed = uiaxes(lagrangianGrid);
+axLagrangianResidual = uiaxes(lagrangianGrid);
+lagrangianSummary = uilabel(lagrangianGrid,'Text','Ready.','WordWrap','on');
+lagrangianExportButton = uibutton(lagrangianGrid,'Text','Export full Lagrangian CSV', ...
+    'Enable','off','ButtonPushedFcn',@exportLagrangian);
 plotGrid = uigridlayout(motionTab,[2 2]);
 plotGrid.Padding = [0 0 0 0];
 axSpeed = uiaxes(plotGrid); axSpeed.Layout.Row = 1; axSpeed.Layout.Column = 1;
@@ -310,7 +290,7 @@ axDistance = uiaxes(plotGrid); axDistance.Layout.Row = 2; axDistance.Layout.Colu
 hillGrid = uigridlayout(hillTab,[3 1]);
 hillGrid.RowHeight = {48,'1x','1x'};
 formulaLabel = uilabel(hillGrid,'Text', ...
-    'Terrain slope: light 0.75 m Gaussian smoothing, integrated for consistent elevation. Simulation ends at 116 m.', ...
+    'Dynamic / energy: original terrain smoothing. Lagrangian: extra 30% angle-smoothing blend. Both retain the total height drop.', ...
     'WordWrap','on','FontSize',12);
 axHill = uiaxes(hillGrid);
 axGrade = uiaxes(hillGrid);
@@ -335,7 +315,7 @@ refreshList(0);
 runSimulation();
 fig.Visible = 'on';
 
-%% Callbacks
+
     function index = selectedIndex()
         index = find(strcmp(obstacleList.Items, obstacleList.Value), 1) - 1;
         if isempty(index)
@@ -482,8 +462,8 @@ fig.Visible = 'on';
             if ~isfield(loaded,'settings') || ~isstruct(loaded.settings) || ~isscalar(loaded.settings)
                 error('Choose a settings file exported by this dynamics app.');
             end
-            % Legacy single-section files reuse their numeric values in all
-            % three sections. This app always interprets b as linear N*s/m.
+
+
             for section = 1:3
                 muKey = sprintf('Crr%d',section);
                 bKey = sprintf('b%d',section);
@@ -495,7 +475,7 @@ fig.Visible = 'on';
                 end
             end
             if ~isfield(loaded.settings,'pushForce_N')
-                loaded.settings.pushForce_N = 0; % Older saved runs had no push.
+                loaded.settings.pushForce_N = 0;
             end
             values = zeros(nInputs,1);
             for j = 1:nInputs
@@ -534,7 +514,7 @@ fig.Visible = 'on';
         end
     end
 
-    function updateCourseOverview(r,e,p)
+    function updateCourseOverview(r,e,l,p)
         xx = unique([linspace(p.xStart,p.xEnd,800),obstacleBreaks(p)]);
         hh = hillHeight(xx,p)+p.sourceElevationAtStart;
         plotResult(axFullHill,xx,hh,'Merged hill profile','','Elevation (m)');
@@ -546,8 +526,9 @@ fig.Visible = 'on';
         plotResult(axFullSpeed,r.x_m,r.speed_mps,'Velocity along the course','','Speed (m/s)');
         hold(axFullSpeed,'on');
         plot(axFullSpeed,e.x_m,e.speed_mps,'--','Color',green,'LineWidth',1.6);
+        plot(axFullSpeed,l.x_m,l.speed_mps,':','Color',[0.58 0.20 0.75],'LineWidth',2.1);
         hold(axFullSpeed,'off');
-        legend(axFullSpeed,{'Dynamic','Energy balance'},'Location','northeast');
+        legend(axFullSpeed,{'Dynamic','Energy balance','Lagrangian'},'Location','northeast');
         markObstacles(axFullSpeed,p,false);
         plotResult(axFullEnergy,e.x_m,e.kinetic_J,'Energy accounting','','Energy (J)');
         hold(axFullEnergy,'on');
@@ -700,6 +681,7 @@ fig.Visible = 'on';
     function parametersChanged(~,~)
         exportButton.Enable = 'off';
         energyExportButton.Enable = 'off';
+        lagrangianExportButton.Enable = 'off';
         comparisonExportButton.Enable = 'off';
         if autoRun.Value
             runSimulation();
@@ -723,8 +705,9 @@ fig.Visible = 'on';
         runButton.Enable = 'off';
         exportButton.Enable = 'off';
         energyExportButton.Enable = 'off';
+        lagrangianExportButton.Enable = 'off';
         comparisonExportButton.Enable = 'off';
-        cleanup = onCleanup(@finishRun); %#ok<NASGU>
+        cleanup = onCleanup(@finishRun);
         updateEditor();
         statusLabel.Text = 'Calculating...';
         drawnow limitrate nocallbacks
@@ -741,17 +724,36 @@ fig.Visible = 'on';
             p.obstacles = obstacles;
             [result,p,message] = simulateKart(p);
             [energy,energyMessage] = simulateEnergy(p);
-            % Compare at the same x, not at the same row or solver time.
+
+
+            pLag = p;
+            pLag.angleSmoothingFraction = p.lagrangianAngleSmoothingFraction;
+            pLag = rmfield(pLag,'pushEndX_m');
+            [lagHeightPP,~] = mergedHillInterpolants(pLag);
+            pLag.sourceElevationAtStart = ppval(lagHeightPP,pLag.sourceXStart)+rampHeight(pLag.xStart,pLag);
+            pLag.pushEndX_m = findPushEnd(pLag);
+            [lagrangian,lagrangianMessage] = simulateLagrangian(pLag);
+
             result.energy_kinetic_J = sampleAtX(energy.x_m,energy.kinetic_J,result.x_m);
             result.energy_speed_mps = sqrt(2*max(result.energy_kinetic_J,0)/p.mEffective);
             result.energy_speed_mps(~isfinite(result.energy_kinetic_J)) = NaN;
             result.dynamic_minus_energy_mps = result.speed_mps-result.energy_speed_mps;
-            % Apply plotting offsets after solving the physical motion.
+
+            [lagX,lagIndices] = unique(lagrangian.x_m,'stable');
+            lagK = sampleAtX(lagX,lagrangian.kinetic_J(lagIndices),result.x_m);
+            result.lagrangian_speed_mps = sqrt(2*max(lagK,0)/p.mEffective);
+            result.lagrangian_speed_mps(~isfinite(lagK)) = NaN;
+            result.lagrangian_minus_dynamic_mps = result.lagrangian_speed_mps-result.speed_mps;
+            lagrangian.comparison_x_m = lagrangian.x_m+p.comparisonXOffset_m;
+            lagrangian.displayed_speed_mps = lagrangian.speed_mps+p.simulatedSpeedOffset_mps;
+            lagrangian.gps_speed_mps = sampleRecordedSpeed(gpsSpeed,lagrangian.comparison_x_m);
+            lagrangian.displayed_speed_error_mps = lagrangian.displayed_speed_mps-lagrangian.gps_speed_mps;
+            result.lagrangian_displayed_speed_mps = result.lagrangian_speed_mps+p.simulatedSpeedOffset_mps;
+
             result.comparison_x_m = result.x_m+p.comparisonXOffset_m;
             energy.comparison_x_m = energy.x_m+p.comparisonXOffset_m;
-            % Right-hand speed at x=0; exclude the zero-speed display anchor
-            % from interpolation so duplicate x coordinates are unambiguous.
-            % NaN outside the recorded distance range; never extrapolate GPS speeds.
+
+
             result.gps_speed_mps = sampleRecordedSpeed(gpsSpeed,result.comparison_x_m);
             energy.gps_speed_mps = sampleRecordedSpeed(gpsSpeed,energy.comparison_x_m);
             result.speed_error_mps = result.speed_mps-result.gps_speed_mps;
@@ -768,13 +770,15 @@ fig.Visible = 'on';
             energy.gps_speed_lower_mps = energy.gps_speed_mps-p.speedErrorFraction*abs(energy.gps_speed_mps);
             energy.gps_speed_upper_mps = energy.gps_speed_mps+p.speedErrorFraction*abs(energy.gps_speed_mps);
             lastEnergy = energy;
+            lastLagrangian = lagrangian;
             lastResults = result;
             lastParameters = p;
-            fig.UserData = struct('Results',result,'Energy',energy,'Parameters',p,'GPSSpeed',gpsSpeed);
+            lastLagrangianParameters = pLag;
+            fig.UserData = struct('Results',result,'Energy',energy,'Lagrangian',lagrangian,'Parameters',p,'LagrangianParameters',pLag,'GPSSpeed',gpsSpeed);
             plotResult(axSpeed,result.time_s,result.displayed_speed_mps, ...
                 'Dynamic velocity over time','Time (s)','Speed (m/s)');
-            drawComparison(axDistanceSpeed,result,energy,p,false);
-            drawComparison(axComparison,result,energy,p,true);
+            drawComparison(axDistanceSpeed,result,energy,lagrangian,p,false);
+            drawComparison(axComparison,result,energy,lagrangian,p,true);
             plotResult(axAccel,result.time_s,result.acceleration_mps2, ...
                 'Acceleration over time','Time (s)','Acceleration (m/s^2)');
             plotResult(axDistance,result.time_s,result.distance_m, ...
@@ -793,6 +797,23 @@ fig.Visible = 'on';
                 'Coulomb + viscous losses','Viscous loss only'},'Location','best');
             plotResult(axAgreement,result.x_m,result.dynamic_minus_energy_mps, ...
                 'Dynamic speed minus energy speed','Section coordinate x (m)','Speed difference (m/s)');
+            hold(axAgreement,'on');
+            plot(axAgreement,result.x_m,result.lagrangian_minus_dynamic_mps,'-.', ...
+                'Color',[0.58 0.20 0.75],'LineWidth',1.8);
+            hold(axAgreement,'off');
+            title(axAgreement,'Speed differences (Lagrangian uses smoother terrain)');
+            legend(axAgreement,{'Dynamic - energy','Lagrangian - dynamic'},'Location','best');
+            plotResult(axLagrangianSpeed,lagrangian.time_s,lagrangian.speed_mps, ...
+                'Lagrangian speed (physical, without display offset)','Time (s)','Speed (m/s)');
+            plotResult(axLagrangianResidual,lagrangian.time_s,lagrangian.balance_residual_J, ...
+                'K + potential change + losses - push work - K0','Time (s)','Energy residual (J)');
+            lagDifference = result.lagrangian_minus_dynamic_mps;
+            lagDifference = lagDifference(isfinite(lagDifference));
+            if isempty(lagDifference), maxLagDifference = NaN; else, maxLagDifference = max(abs(lagDifference)); end
+            lagrangianSummary.Text = sprintf(['%s Final: %.3f m/s at %.2f s.\n' ...
+                'Max |Lagrangian - dynamic|: %.3g m/s | Max energy residual: %.3g J'], ...
+                lagrangianMessage,lagrangian.speed_mps(end),lagrangian.time_s(end), ...
+                maxLagDifference,max(abs(lagrangian.balance_residual_J)));
             difference = result.dynamic_minus_energy_mps;
             difference = difference(isfinite(difference));
             if isempty(difference), maxDifference = NaN; else, maxDifference = max(abs(difference)); end
@@ -808,9 +829,19 @@ fig.Visible = 'on';
             plot(axHill,result.x_m(end),result.original_elevation_m(end),'o', ...
                 'MarkerFaceColor',[0.95 0.45 0.12],'MarkerEdgeColor','w','MarkerSize',8);
             hold(axHill,'off');
-            legend(axHill,{'Hill profile','Simulated path','Final position'},'Location','best');
+            hold(axHill,'on');
+            plot(axHill,xHill,hillHeight(xHill,pLag)+pLag.sourceElevationAtStart, ...
+                '--','Color',[0.58 0.20 0.75],'LineWidth',1.6);
+            hold(axHill,'off');
+            legend(axHill,{'Dynamic / energy terrain','Dynamic path','Final position', ...
+                'Lagrangian terrain'},'Location','best');
             plotResult(axGrade,xHill,-atan(hillSlope(xHill,p))*180/pi, ...
                 'Local slope (positive downhill)','Section coordinate x (m)','Downhill angle (deg)');
+            hold(axGrade,'on');
+            plot(axGrade,xHill,-atan(hillSlope(xHill,pLag))*180/pi, ...
+                '--','Color',[0.58 0.20 0.75],'LineWidth',1.6);
+            hold(axGrade,'off');
+            legend(axGrade,{'Dynamic / energy angle','Lagrangian angle (+30% smoothing)'},'Location','best');
             xlim(axEnergy,[p.xStart p.xEnd]);
             xlim(axAgreement,[p.xStart p.xEnd]);
             xlim(axHill,[p.xStart p.xEnd]);
@@ -822,11 +853,12 @@ fig.Visible = 'on';
                 result.time_s(end),result.distance_m(end));
             metricMass.Text = sprintf('Effective mass\n%.2f kg (+%.2f)', ...
                 p.mEffective,p.mEffective-p.mass);
-            updateCourseOverview(result,energy,p);
+            updateCourseOverview(result,energy,lagrangian,p);
             prepareAnimation();
             statusLabel.Text = ['Merged hill: simulation ends at 116 m | ' message];
             exportButton.Enable = 'on';
             energyExportButton.Enable = 'on';
+            lagrangianExportButton.Enable = 'on';
             updateComparisonVisibility();
         catch err
             statusLabel.Text = 'Simulation failed. Check the inputs; any existing plots show the previous run.';
@@ -846,11 +878,13 @@ fig.Visible = 'on';
         ax.FontSize = 10; box(ax,'off');
     end
 
-    function drawComparison(ax,result,energy,p,large)
-        % Crop plotting copies only. Full solver tables retain physical history.
+    function drawComparison(ax,result,energy,lagrangian,p,large)
+
         [dynamicX,dynamicValues] = trimComparisonSamples(result.comparison_x_m, ...
             [result.displayed_speed_mps result.dynamic_speed_lower_mps result.dynamic_speed_upper_mps]);
         [energyX,energySpeed] = trimComparisonSamples(energy.comparison_x_m,energy.displayed_speed_mps);
+        [lagrangianX,lagrangianSpeed] = trimComparisonSamples( ...
+            lagrangian.comparison_x_m,lagrangian.displayed_speed_mps);
         cla(ax);
         hold(ax,'on');
         gpsColor = [0.90 0.35 0.08];
@@ -872,14 +906,16 @@ fig.Visible = 'on';
             'Color',blue,'LineWidth',2.2,'Marker','none');
         hEnergy = plot(ax,energyX,energySpeed,'--', ...
             'Color',[0.05 0.60 0.36],'LineWidth',2.0,'Marker','none');
+        hLagrangian = plot(ax,lagrangianX,lagrangianSpeed,':', ...
+            'Color',[0.58 0.20 0.75],'LineWidth',2.8,'Marker','none');
         hGPS = plot(ax,gpsX,gpsV,'-', ...
             'Color',gpsColor,'LineWidth',2.2,'Marker','none');
         hold(ax,'off');
         grid(ax,'on');
-        % Show all GPS samples without extending the simulated hill interval.
+
         xlim(ax,[min(0,gpsX(1)), ...
             max(p.xEnd+p.comparisonXOffset_m,gpsX(end))]);
-        visibleValues = [dynamicValues(:,1);energySpeed;gpsV];
+        visibleValues = [dynamicValues(:,1);energySpeed;lagrangianSpeed;gpsV];
         if large
             visibleValues = [visibleValues;dynamicValues(:,2); ...
                 dynamicValues(:,3);gpsLower;gpsUpper];
@@ -889,14 +925,14 @@ fig.Visible = 'on';
         ylim(ax,[bottom-0.02*max(1,top-bottom),top+0.08*max(1,top-bottom)]);
         title(ax,'Simulated and recorded kart speed');
         xlabel(ax,'Comparison coordinate (m)'); ylabel(ax,'Speed (m/s)');
-        labels = {'Dynamic','Energy balance','Real kart speed'};
+        labels = {'Dynamic','Energy balance','Real kart speed','Lagrangian'};
         if large
             ax.FontSize = 13;
-            ax.UserData = [hDynamic hEnergy hGPS hBand hGPSBand];
+            ax.UserData = [hDynamic hEnergy hGPS hBand hGPSBand hLagrangian];
             updateComparisonVisibility();
         else
             ax.FontSize = 10;
-            legend(ax,[hDynamic hEnergy hGPS],labels,'Location','best','FontSize',8);
+            legend(ax,[hDynamic hEnergy hGPS hLagrangian],labels,'Location','best','FontSize',8);
         end
     end
 
@@ -929,8 +965,8 @@ fig.Visible = 'on';
                             lowerSpeed = nan(size(y));
                             upperSpeed = nan(size(y));
                         else
-                            % Each filled polygon stores its lower edge forward
-                            % and its upper edge in reverse sample order.
+
+
                             count = numel(x)/2;
                             x = x(1:count);
                             speed = nan(size(x));
@@ -941,10 +977,10 @@ fig.Visible = 'on';
                         rows = table(series,x,speed,lowerSpeed,upperSpeed, ...
                             'VariableNames',{'series','x_m','speed_mps', ...
                             'lower_speed_mps','upper_speed_mps'});
-                        % NaN placeholders represent a simulated curve that
-                        % never reached the visible comparison interval.
+
+
                         rows = rows(isfinite(rows.x_m),:);
-                        exported = [exported;rows]; %#ok<AGROW>
+                        exported = [exported;rows];
                     end
                     writetable(exported,destination);
                 case '.png'
@@ -965,7 +1001,7 @@ fig.Visible = 'on';
         [name,folder] = uiputfile('*.csv','Export simulation results','KartVelocityResults_v48.csv');
         if isequal(name,0), return; end
         try
-            % Repeat the run inputs so each CSV is self-contained.
+
             exported = lastResults;
             keys = fieldnames(lastParameters);
             for j = 1:numel(keys)
@@ -978,6 +1014,28 @@ fig.Visible = 'on';
             end
             writetable(exported,fullfile(folder,name));
             statusLabel.Text = ['Exported results and run parameters to ' fullfile(folder,name)];
+        catch err
+            uialert(fig,err.message,'Export error');
+        end
+    end
+
+    function exportLagrangian(~,~)
+        if isempty(lastLagrangian), return; end
+        [name,folder] = uiputfile('*.csv','Export full Lagrangian results','KartLagrangianResults.csv');
+        if isequal(name,0), return; end
+        try
+            exported = lastLagrangian;
+            keys = fieldnames(lastLagrangianParameters);
+            for j = 1:numel(keys)
+                value = lastLagrangianParameters.(keys{j});
+                if isstruct(value)
+                    exported.(['input_' keys{j} '_json']) = repmat({jsonencode(value)},height(exported),1);
+                else
+                    exported.(['input_' keys{j}]) = repmat(value,height(exported),1);
+                end
+            end
+            writetable(exported,fullfile(folder,name));
+            statusLabel.Text = ['Exported Lagrangian results to ' fullfile(folder,name)];
         catch err
             uialert(fig,err.message,'Export error');
         end
@@ -1006,23 +1064,21 @@ fig.Visible = 'on';
     end
 end
 
-%% Dynamics on y = h(x)
+
 function [results,p,status] = simulateKart(p)
-% Both solvers use the same embedded terrain and its analytic PCHIP slope.
+
 p.sourceXStart = p.sourceXOffset+p.xStart;
 p.sourceXEnd = p.sourceXOffset+p.xEnd;
-[heightPP,~] = mergedHillInterpolants();
+[heightPP,~] = mergedHillInterpolants(p);
 p.sourceElevationAtStart = ppval(heightPP,p.sourceXStart)+rampHeight(p.xStart,p);
 p.mEffective = p.mass + p.nWheels*p.Iwheel/p.radius^2;
-p.dragFactor = 0.5*p.rho*p.CdA; % Exactly zero: drag is neglected.
+p.dragFactor = 0.5*p.rho*p.CdA;
 p.linear1PerWheel_Nms = p.b1*p.radius^2/p.nWheels;
 p.linear2PerWheel_Nms = p.b2*p.radius^2/p.nWheels;
 p.linear3PerWheel_Nms = p.b3*p.radius^2/p.nWheels;
 p.pushEndX_m = findPushEnd(p);
 
-% State = [horizontal x; speed along path; distance along path].
-% q = sqrt(1 + h'(x)^2), theta = -atan(h'(x)).
-% dx/dt = v/q; ds/dt = v.
+
 [initialAcceleration,~,~,~,~] = localForces(p.xStart,p.v0,p);
 if p.v0 == 0 && initialAcceleration <= 0
     time_s = [0;p.tMax];
@@ -1042,8 +1098,8 @@ else
             @(t,y) stopEvents(t,y,p,breaks(segment+1)));
         [tt,yy,~,~,eventIndex] = ode45(@(t,y) kartODE(t,y,segmentParameters), ...
             [time_s(end) p.tMax],state(end,:).',segmentOptions);
-        time_s = [time_s;tt(2:end)]; %#ok<AGROW>
-        state = [state;yy(2:end,:)]; %#ok<AGROW>
+        time_s = [time_s;tt(2:end)];
+        state = [state;yy(2:end,:)];
         if any(eventIndex == 1), state(end,1) = breaks(segment+1); end
         reachedEnd = any(eventIndex == 1) && segment == numel(breaks)-1;
         if any(eventIndex == 2) || ~any(eventIndex == 1) || time_s(end) >= p.tMax
@@ -1063,7 +1119,7 @@ end
 x_m = state(:,1);
 distance_m = state(:,3);
 elevation_m = hillHeight(x_m,p);
-original_x_m = x_m+p.sourceXOffset; % Source coordinate of the merged terrain.
+original_x_m = x_m+p.sourceXOffset;
 horizontal_from_start_m = x_m-p.xStart;
 original_elevation_m = elevation_m+p.sourceElevationAtStart;
 speed_mps = max(state(:,2),0);
@@ -1082,7 +1138,7 @@ function dydt = kartODE(~,y,p)
 v = max(y(2),0);
 slope = hillSlope(y(1),p);
 a = localForces(y(1),v,p);
-% Smooth trial steps through zero speed; terminal event truncates the run.
+
 dydt = [v/sqrt(1+slope^2);a;v];
 end
 
@@ -1093,7 +1149,7 @@ angleDeg = -atan(slope)*180/pi;
 Fgravity = -p.mass*9.81*slope./q;
 [Frolling,Fviscous] = frictionForces(v,q,p,x);
 Fdrag = p.dragFactor*v.^2;
-% Retain the uploaded dynamic model's acceleration scaling.
+
 Fpush = startPushForce(x,p);
 a = (Fgravity+Fpush-Frolling-Fdrag-Fviscous)/p.mEffective;
 end
@@ -1107,8 +1163,8 @@ end
 
 function [value,isterminal,direction] = stopEvents(t,y,p,xTarget)
 stopValue = y(2);
-% Starting from rest with positive acceleration is handled separately from
-% a later downward zero-speed crossing. Avoid a spurious root at release.
+
+
 if t == 0 && p.v0 == 0, stopValue = 1; end
 value = [xTarget-y(1);stopValue];
 isterminal = [1;1];
@@ -1122,15 +1178,125 @@ for k = 1:numel(names), values(k) = s.(names{k}); end
 end
 
 
-%% Independent work-energy method (distance is the independent variable)
+function [results,status] = simulateLagrangian(p)
+
+
+q0 = sqrt(1+hillSlope(p.xStart,p)^2);
+y0 = [p.xStart;p.v0/q0;0;0;0;0;0];
+initialDerivative = lagrangianODE(0,y0,p);
+if p.v0 == 0 && initialDerivative(2) <= 0
+    time_s = [0;p.tMax];
+    state = [y0.';y0.'];
+    status = 'Lagrangian: remained at rest.';
+else
+    options = odeset('RelTol',1e-10, ...
+        'AbsTol',[1e-10 1e-12 1e-10 1e-9 1e-9 1e-9 1e-9],'MaxStep',0.02);
+
+
+    [~,terrainSlopePP] = mergedHillInterpolants(p);
+    terrainKnots = terrainSlopePP.breaks-p.sourceXOffset;
+    terrainKnots = terrainKnots(terrainKnots>p.xStart & terrainKnots<p.xEnd);
+    breaks = unique([obstacleBreaks(p) terrainKnots]);
+    time_s = 0;
+    state = y0.';
+    eventIndex = [];
+    reachedEnd = false;
+    for segment = 1:numel(breaks)-1
+        segmentParameters = p;
+        segmentParameters.segmentMid = (breaks(segment)+breaks(segment+1))/2;
+        segmentOptions = odeset(options,'Events', ...
+            @(t,y) stopEvents(t,y,p,breaks(segment+1)));
+        [tt,yy,~,~,eventIndex] = ode45(@(t,y) lagrangianODE(t,y,segmentParameters), ...
+            [time_s(end) p.tMax],state(end,:).',segmentOptions);
+        time_s = [time_s;tt(2:end)];
+        state = [state;yy(2:end,:)];
+        if any(eventIndex == 1)
+            state(end,1) = breaks(segment+1);
+
+
+            qLeft = sqrt(1+hillSlope(state(end,1),segmentParameters)^2);
+            qRight = sqrt(1+hillSlope(state(end,1),p)^2);
+            state(end,2) = state(end,2)*qLeft/qRight;
+        end
+        reachedEnd = any(eventIndex == 1) && segment == numel(breaks)-1;
+        if any(eventIndex == 2) || ~any(eventIndex == 1) || time_s(end) >= p.tMax
+            break
+        end
+    end
+    if reachedEnd
+        status = 'Lagrangian: reached end x.';
+    elseif any(eventIndex == 2)
+        state(end,2) = 0;
+        status = 'Lagrangian: stopped before end x (no rollback).';
+    else
+        status = 'Lagrangian: reached time limit.';
+    end
+end
+x_m = state(:,1);
+horizontal_velocity_mps = max(state(:,2),0);
+distance_m = state(:,3);
+slope = hillSlope(x_m,p);
+curvature = hillSecondDerivative(x_m,p);
+q = sqrt(1+slope.^2);
+speed_mps = q.*horizontal_velocity_mps;
+[rolling_force_N,viscous_force_N] = frictionForces(speed_mps,q,p,x_m);
+drag_force_N = p.dragFactor*speed_mps.^2;
+push_force_N = startPushForce(x_m,p);
+generalized_force_N = (push_force_N-rolling_force_N-viscous_force_N-drag_force_N).*q;
+horizontal_acceleration_mps2 = (generalized_force_N-p.mass*9.81*slope ...
+    -p.mEffective*slope.*curvature.*horizontal_velocity_mps.^2)./(p.mEffective*q.^2);
+acceleration_mps2 = q.*horizontal_acceleration_mps2 ...
+    +slope.*curvature./q.*horizontal_velocity_mps.^2;
+stationary = speed_mps <= 0 & acceleration_mps2 < 0;
+horizontal_acceleration_mps2(stationary) = 0;
+acceleration_mps2(stationary) = 0;
+elevation_m = hillHeight(x_m,p);
+original_x_m = x_m+p.sourceXOffset;
+kinetic_J = 0.5*p.mEffective*speed_mps.^2;
+initial_kinetic_J = repmat(0.5*p.mEffective*p.v0^2,numel(x_m),1);
+potential_change_J = p.mass*9.81*(elevation_m-hillHeight(p.xStart,p));
+rolling_loss_J = state(:,4);
+viscous_loss_J = state(:,5);
+drag_loss_J = state(:,6);
+push_work_J = state(:,7);
+balance_residual_J = kinetic_J+potential_change_J+rolling_loss_J ...
+    +viscous_loss_J+drag_loss_J-push_work_J-initial_kinetic_J;
+results = table(time_s,x_m,original_x_m,distance_m,elevation_m, ...
+    horizontal_velocity_mps,horizontal_acceleration_mps2,speed_mps,acceleration_mps2, ...
+    rolling_force_N,viscous_force_N,drag_force_N,generalized_force_N, ...
+    kinetic_J,initial_kinetic_J,potential_change_J,rolling_loss_J,viscous_loss_J, ...
+    drag_loss_J,push_force_N,push_work_J,balance_residual_J);
+results.mu_coefficient = surfaceMu(x_m,p);
+[~,results.viscous_b_Ns_per_m,results.friction_section] = sectionCoefficients(x_m,p);
+end
+
+function dydt = lagrangianODE(~,y,p)
+slope = hillSlope(y(1),p);
+curvature = hillSecondDerivative(y(1),p);
+q = sqrt(1+slope^2);
+u = max(y(2),0);
+v = q*u;
+[Frolling,Fviscous] = frictionForces(v,q,p,y(1));
+Fdrag = p.dragFactor*v^2;
+Fpush = startPushForce(y(1),p);
+Qx = (Fpush-Frolling-Fviscous-Fdrag)*q;
+udot = (Qx-p.mass*9.81*slope-p.mEffective*slope*curvature*u^2) ...
+    /(p.mEffective*q^2);
+dydt = [u;udot;v;Frolling*v;Fviscous*v;Fdrag*v;Fpush*v];
+end
+
+function curvature = hillSecondDerivative(x,p)
+
+
+[heightPP,~,curvaturePP] = mergedHillInterpolants(p);
+xSource = min(max(x+p.sourceXOffset,heightPP.breaks(1)),heightPP.breaks(end));
+curvature = ppval(curvaturePP,xSource);
+end
+
+
 function [results,status] = simulateEnergy(p)
-% K includes translation and wheel rotation. With q = sqrt(1+h'(x)^2):
-%   dK/dx = -m*g*h'(x) + (Fpush-FCoulomb-Fviscous-Fdrag)*q
-% Energy state = [kinetic energy; aerodynamic loss; viscous loss; push work].
-% Linear resistance b(x)*v uses the current section at every speed.
-% dWviscous/dx = Fviscous*q; power = Fviscous*v.
-% Coulomb work: WCoulomb = m*g*integral(mu(x) dx), since N~m*g/q.
-% This solver does not use dynamic speeds, times, or accelerations.
+
+
 K0 = 0.5*p.mEffective*p.v0^2;
 initialSlope = hillSlope(p.xStart,p);
 initialGradient = -p.mass*9.81*(initialSlope+surfaceMu(p.xStart,p)) ...
@@ -1152,8 +1318,8 @@ else
         segmentParameters.segmentMid = (breaks(segment)+breaks(segment+1))/2;
         [xx,zz,~,~,eventIndex] = ode45(@(x,z) energyODE(x,z,segmentParameters), ...
             [breaks(segment) breaks(segment+1)],state(end,:).',options);
-        x_m = [x_m;xx(2:end)]; %#ok<AGROW>
-        state = [state;zz(2:end,:)]; %#ok<AGROW>
+        x_m = [x_m;xx(2:end)];
+        state = [state;zz(2:end,:)];
         if ~isempty(eventIndex), break; end
     end
     if isempty(eventIndex)
@@ -1166,7 +1332,7 @@ end
 kinetic_J = max(state(:,1),0);
 speed_mps = sqrt(2*kinetic_J/p.mEffective);
 elevation_m = hillHeight(x_m,p);
-original_x_m = x_m+p.sourceXOffset; % Source coordinate of the merged terrain.
+original_x_m = x_m+p.sourceXOffset;
 horizontal_from_start_m = x_m-p.xStart;
 original_elevation_m = elevation_m+p.sourceElevationAtStart;
 initial_kinetic_J = repmat(K0,numel(x_m),1);
@@ -1176,7 +1342,7 @@ drag_loss_J = state(:,2);
 viscous_loss_J = state(:,3);
 push_work_J = state(:,4);
 push_force_N = startPushForce(x_m,p);
-% Conservation diagnostic: should remain near zero, including with losses.
+
 balance_residual_J = kinetic_J-initial_kinetic_J-gravity_work_J-push_work_J+rolling_loss_J+drag_loss_J+viscous_loss_J;
 results = table(x_m,original_x_m,horizontal_from_start_m,elevation_m,original_elevation_m,speed_mps, ...
     kinetic_J,initial_kinetic_J,gravity_work_J,rolling_loss_J,drag_loss_J,viscous_loss_J,push_work_J,push_force_N,balance_residual_J);
@@ -1204,8 +1370,8 @@ direction = -1;
 end
 
 function sampled = sampleAtX(x,values,query)
-% Interpolate kinetic energy before taking sqrt, so release from rest is
-% represented accurately. Never extrapolate past an energy-method stop.
+
+
 sampled = nan(size(query));
 tolerance = 1e-7;
 if numel(x) == 1
@@ -1219,23 +1385,24 @@ end
 
 
 function h = hillHeight(x,p)
-[heightPP,~] = mergedHillInterpolants();
-% Clamp trial evaluations beyond the terminal boundary; no terrain extrapolation.
+[heightPP,~] = mergedHillInterpolants(p);
+
 xSource = min(max(x+p.sourceXOffset,heightPP.breaks(1)),heightPP.breaks(end));
 h = ppval(heightPP,xSource)+rampHeight(x,p)-p.sourceElevationAtStart;
 end
 
 function slope = hillSlope(x,p)
-[heightPP,slopePP] = mergedHillInterpolants();
+[heightPP,slopePP] = mergedHillInterpolants(p);
 xSource = min(max(x+p.sourceXOffset,heightPP.breaks(1)),heightPP.breaks(end));
 slope = ppval(slopePP,xSource)+rampSlope(x,p);
 end
 
-function [heightPP,slopePP] = mergedHillInterpolants()
-persistent heightCache slopeCache
-if isempty(heightCache)
-    % Final smoothed terrain, embedded at full double precision.
-    % Columns: [distance_m, height_m]. Slope is lightly smoothed below.
+function [heightPP,slopePP,curvaturePP] = mergedHillInterpolants(p)
+persistent heightCache slopeCache curvatureCache smoothingKey
+key = [p.angleSmoothingFraction p.angleSmoothingSigma_m];
+if isempty(heightCache) || ~isequal(smoothingKey,key)
+
+
     data = [
         0 8;
         0.24995715627450296 7.9203675976386885;
@@ -1719,8 +1886,8 @@ if isempty(heightCache)
         119.72947785548692 0;
         119.97943501176142 0;
     ];
-    % Smooth slope rather than only its plotted angle. Then integrate the
-    % smoothed polynomial exactly, keeping gravity work and dynamics consistent.
+
+
     rawHeight = pchip(data(:,1),data(:,2));
     [breaks,coefs,~,order,dimension] = unmkpp(rawHeight);
     rawSlope = mkpp(breaks,bsxfun(@times,coefs(:,1:order-1),order-1:-1:1),dimension);
@@ -1735,29 +1902,48 @@ if isempty(heightCache)
     padded = [repmat(slopeSamples(1),radius,1);slopeSamples; ...
         repmat(slopeSamples(end),radius,1)];
     smoothSlope = conv(padded,weights,'valid');
-    slopeCache = pchip(data(:,1),smoothSlope);
-    [breaks,coefs,~,order,dimension] = unmkpp(slopeCache);
-    widths = diff(breaks(:));
-    integralCoefs = bsxfun(@rdivide,coefs,order:-1:1);
-    segmentDrop = sum(integralCoefs.*bsxfun(@power,widths,order:-1:1),2);
-    % Preserve the original overall drop; no independent height/slope fits.
-    scale = (data(end,2)-data(1,2))/sum(segmentDrop);
-    slopeCache = mkpp(breaks,coefs*scale,dimension);
-    constants = data(1,2)+[0;cumsum(segmentDrop(1:end-1)*scale)];
-    heightCache = mkpp(breaks,[integralCoefs*scale constants],dimension);
+
+
+    for pass = 1:(1+double(p.angleSmoothingFraction>0))
+        if pass == 2
+            angles = -atan(ppval(slopeCache,data(:,1)));
+            angles = angles(:);
+            radius = ceil(3*p.angleSmoothingSigma_m/spacing);
+            offsets = (-radius:radius)'*spacing;
+            weights = exp(-0.5*(offsets/p.angleSmoothingSigma_m).^2);
+            weights = weights/sum(weights);
+            paddedAngles = [repmat(angles(1),radius,1);angles;repmat(angles(end),radius,1)];
+            filteredAngles = conv(paddedAngles,weights,'valid');
+            angles = angles+p.angleSmoothingFraction*(filteredAngles-angles);
+            smoothSlope = -tan(angles);
+        end
+        slopeCache = pchip(data(:,1),smoothSlope);
+        [breaks,coefs,~,order,dimension] = unmkpp(slopeCache);
+        widths = diff(breaks(:));
+        integralCoefs = bsxfun(@rdivide,coefs,order:-1:1);
+        segmentDrop = sum(integralCoefs.*bsxfun(@power,widths,order:-1:1),2);
+        scale = (data(end,2)-data(1,2))/sum(segmentDrop);
+        slopeCache = mkpp(breaks,coefs*scale,dimension);
+        constants = data(1,2)+[0;cumsum(segmentDrop(1:end-1)*scale)];
+        heightCache = mkpp(breaks,[integralCoefs*scale constants],dimension);
+    end
+    curvatureCache = mkpp(breaks, ...
+        bsxfun(@times,coefs(:,1:order-1)*scale,order-1:-1:1),dimension);
+    smoothingKey = key;
 end
 heightPP = heightCache;
 slopePP = slopeCache;
+curvaturePP = curvatureCache;
 end
 
 
 function [xVisible,yVisible] = trimComparisonSamples(x,y)
-% Clip connected comparison curves at x=0, interpolating the boundary.
-% Input x is nondecreasing; y may contain speed and both band edges.
+
+
 firstVisible = find(x >= 0,1,'first');
 if isempty(firstVisible)
-    % Keep a graphics handle for checkboxes, even when the curve is empty.
-    % Selected CSV export removes these placeholders.
+
+
     xVisible = NaN;
     yVisible = nan(1,size(y,2));
     return
@@ -1822,7 +2008,6 @@ function validateObstacles(obstacles, courseLength)
     end
 end
 
-%% Interface helpers
 
 function place(component, row, column)
     component.Layout.Row = row;
@@ -1877,17 +2062,17 @@ breaks = [p.xStart p.sectionBoundary1_m p.sectionBoundary2_m p.xEnd];
 if isfield(p,'pushEndX_m'), breaks=[breaks p.pushEndX_m]; end
 for k=1:numel(p.obstacles)
     o=p.obstacles(k);
-    breaks=[breaks o.start_m obstacleEnd(o)]; %#ok<AGROW>
+    breaks=[breaks o.start_m obstacleEnd(o)];
     if strcmp(o.type,'Ramp')
-        breaks=[breaks o.start_m+o.up_m o.start_m+o.up_m+o.flat_m]; %#ok<AGROW>
+        breaks=[breaks o.start_m+o.up_m o.start_m+o.up_m+o.flat_m];
     end
 end
 breaks=unique(breaks(breaks>=p.xStart & breaks<=p.xEnd));
 end
 
 function xEnd = findPushEnd(p)
-% Locate 1 m of arc length on the actual terrain, including ramp obstacles.
-% Split quadrature at every geometric corner for a precise force cutoff.
+
+
 xEnd=p.xStart;
 if p.pushForce_N<=0 || p.pushDistance_m<=0, return; end
 breaks=obstacleBreaks(p);
@@ -1956,8 +2141,8 @@ end
 
 function [mu,b,section] = sectionCoefficients(x,p)
 probe=x;
-% Fix region choice during an ODE subinterval; do not jump across a boundary
-% on trial steps. Output samples use the right-hand section at each boundary.
+
+
 if isfield(p,'segmentMid'), probe=p.segmentMid+zeros(size(x)); end
 section=ones(size(x));
 section(probe>=p.sectionBoundary1_m)=2;
@@ -1968,8 +2153,8 @@ mu(section==3)=p.Crr3; b(section==3)=p.b3;
 end
 
 function work = coulombWork(x,p)
-% Integrate the same piecewise mu used by dynamics, including surface
-% overrides that can span more than one base friction section.
+
+
 starts=[p.xStart p.sectionBoundary1_m p.sectionBoundary2_m];
 ends=[p.sectionBoundary1_m p.sectionBoundary2_m p.xEnd];
 baseMu=[p.Crr1 p.Crr2 p.Crr3];
@@ -2013,17 +2198,10 @@ for k=1:numel(p.obstacles)
 end
 end
 
-%% Embedded recorded velocity from RealKartData(1).mat
+
 function gps = embeddedGPSSpeed(xEnd)
-% Position.speed values, treated as m/s, in original recording order.
-% Distance: cumulative horizontal haversine distance using latitude/longitude
-% and Earth radius 6371000 m. Comparison x = recorded distance - 19.07 m.
-% Negative shifted positions and samples beyond the finish are omitted.
-% Interior samples are unchanged; a finish sample is linearly interpolated.
-% Two x=0 anchors draw a vertical start; their timestamps are NaN to mark
-% them as display-only additions, not newly recorded observations.
-% The assumed +/-15% display band is retained; it is not measured uncertainty.
-% Columns: distance_m, recorded_speed_mps, elapsed_time_s.
+
+
 data = [
     0 0 0;
     0.84221520252094884 0 6.0090000000000003;
@@ -2073,9 +2251,8 @@ data = [
 shiftedX = data(:,1)-19.07;
 keep = shiftedX > 0 & shiftedX < xEnd;
 first = find(keep,1,'first');
-% Repeated x=0 gives a vertical segment, not an artificial slanted launch.
-% Interpolate one endpoint at the requested course finish, without extending
-% the recorded curve beyond that station.
+
+
 endSpeed = interp1(shiftedX,data(:,2),xEnd,'linear',NaN);
 endTime = interp1(shiftedX,data(:,3),xEnd,'linear',NaN);
 xDisplay = [0;0;shiftedX(keep);xEnd];
@@ -2086,7 +2263,7 @@ gps = table(xDisplay,vDisplay,tDisplay, ...
 end
 
 function speed = sampleRecordedSpeed(gps,x)
-% Keep the right-hand value at repeated x (the vertical display step).
+
 [uniqueX,index] = unique(gps.x_m,'last');
 speed = interp1(uniqueX,gps.speed_mps(index),x,'linear',NaN);
 end
